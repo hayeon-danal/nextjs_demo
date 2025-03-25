@@ -1,0 +1,46 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '22.13.1'  # 너 버전에 맞게 설정
+
+    - name: Install pnpm
+      run: npm install -g pnpm
+
+    - name: Install dependencies and build
+      run: |
+        pnpm install
+        pnpm run build
+
+    - name: Copy files to server
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        source: ".next,public,package.json,pnpm-lock.yaml"
+        target: "/home/ubuntu/next-app"
+
+    - name: Run app with PM2
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        script: |
+          cd /home/ubuntu/next-app
+          pnpm install --prod
+          pm2 restart next-app || pm2 start pnpm --name "next-app" -- start
