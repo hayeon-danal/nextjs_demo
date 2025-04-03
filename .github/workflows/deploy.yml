@@ -5,43 +5,60 @@ on:
     branches: [main]
 
 jobs:
+  ghes-env-check: # GHES 환경 체크용 job
+    uses: danal-rnd/check-environment-action/.github/workflows/ghes-only.yml@master
+    
   deploy:
-    runs-on: ubuntu-latest
-
+    runs-on: self-hosted
+    needs: ghes-env-check
+    env:
+      TARGET_DIR: ${{ vars.TARGET_DIR }}
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      # 코드 체크아웃
+      - name: checkout
+        uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '22.13.1'  # 너 버전에 맞게 설정
+      # 배포대상 서버로 파일 반영
+      - name: connect ssh and execute deploy shell 
+        uses: easingthemes/ssh-deploy@main
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_KEY }} # 배포 대상 서버에 접속하기 위한 SSH Key
+          REMOTE_HOST: ${{ secrets.SERVER_HOST }} # 배포 대상 서버 주소
+       #   REMOTE_PORT: ${{ secrets.PROD_1_SERVER_PORT }}
+          REMOTE_USER: ${{ secrets.SERVER_USER }} # 배포 대상 서버에 접속하는 user
+          TARGET: $TARGET_DIR # 원격 서버 목적 Directory (도착지)
+          SOURCE: ./ # 옮길 파일들 (regex 가능)
+          EXCLUDE: "/node_modules/, /.git/, /.github/, /.next/, /.local/, /.git*, /.env*, /next-env.d.ts, /.npmrc, /logs/" # 예외 적용
+          ARGS: "-rlgoDzvc --delete" # rsync arguments
+          SCRIPT_BEFORE: | # rsync 이전에 실행할 shell script. 원격 서버에서 실행됨.
+            echo "==== Rsync Step Start ===="
+          SCRIPT_AFTER: | # rsync 이후에 실행할 shell script. 원격 서버에서 실행됨.
+            echo "==== Rsync Step End ===="
+         
+      # shell script 실행
+      - name: executing remote ssh commands
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }} # 배포 대상 서버 주소
+          username: ${{ secrets.SERVER_USER }} # 배포 대상 서버에 접속하는 user
+          key: ${{ secrets.SERVER_SSH_KEY }} # 배포 대상 서버에 접속하기 위한 SSH Key
+        #  port: ${{ secrets.PROD_1_SERVER_PORT }}
+          envs: TARGET_DIR
+          script: | # 실행 shell script
+            echo ">>>> setting environment variables"
+            . /etc/profile
+            echo ">>>> change dir"
+            cd $TARGET_DIR
+            pwd
+            echo ">>>> pnpm install"
+            pnpm install
+            echo ">>>> pnpm build"
+            pnpm build
+            echo ">>>> pm2 start nextjs-demo"
+            pm2 delete nextjs-demo 2> /dev/null; pm2 start "pnpm start" --name nextjs-demo
+            echo ">>>> pm2 list"
+            pm2 list
+          #  echo ">>>> health check"
+          #  /usr/bin/curl --fail -sv --retry 6 --retry-delay 3 --retry-connrefused https://daboa.danalpay.com/           
 
-    - name: Install pnpm
-      run: npm install -g pnpm
 
-    - name: Install dependencies and build
-      run: |
-        pnpm install
-        pnpm run build
-
-    - name: Copy files to server
-      uses: appleboy/scp-action@master
-      with:
-        host: ${{ secrets.SERVER_HOST }}
-        username: ${{ secrets.SERVER_USER }}
-        key: ${{ secrets.SERVER_SSH_KEY }}
-        source: ".next,public,package.json,pnpm-lock.yaml"
-        target: "/home/service/next-app"
-
-    - name: Run app with PM2
-      uses: appleboy/ssh-action@master
-      with:
-        host: ${{ secrets.SERVER_HOST }}
-        username: ${{ secrets.SERVER_USER }}
-        key: ${{ secrets.SERVER_SSH_KEY }}
-        script: |
-          cd /home/service/nextjs-demo
-          pnpm install --prod
-          pnpm build 
-          pm2 restart ecosystem.config.js
